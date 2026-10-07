@@ -1,0 +1,15 @@
+[Unit]
+Description=FreeLLMAPI Unified LLM Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/freellmapi
+EnvironmentFile=/opt/freellmapi/.env
+ExecStart=/usr/bin/node server/dist/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
