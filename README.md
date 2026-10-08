@@ -55,13 +55,22 @@ OK: Basis-Pakete
 OK: Node.js 22
 OK: Repo + Upstream-Clone
 OK: .env (idempotent)
+OK: Admin-Account (deklarativ)
 OK: npm ci + build
 OK: systemd-Unit
 OK: Firewall
 FERTIG: http://192.168.1.100:3001 (CT 100, Hostname freellmapi)
+Login: admin@freellmapi.local / <generiertes-passwort>
+Hinweis: Passwort im Dashboard unter Settings ändern. Vergessen? Auf dem Host: pct exec 100 -- cat /opt/freellmapi/freellmapi.config.json
 ```
 
-Danach: `http://<LXC-IP>:3001` öffnen, auf **Keys** Provider-Keys eintragen,
+Danach: `http://<LXC-IP>:3001` öffnen und direkt mit obigen Daten einloggen –
+**kein Setup-Code nötig**: Der Installer legt den ersten Account deklarativ
+(`FREEAPI_CONFIG_PATH`, Upstream-Feature) vor dem ersten Start an, dadurch wird
+gar kein `First-run setup code` erzeugt. Eigene Mailadresse? Vorab:
+`ADMIN_EMAIL=du@beispiel.de bash -c "$(...)"`.
+
+Dann auf **Keys** Provider-Keys eintragen,
 **Fallback Chain** sortieren, Unified-Key aus dem Keys-Header kopieren und
 OpenAI-Clients auf `http://<LXC-IP>:3001/v1` zeigen lassen.
 

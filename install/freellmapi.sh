@@ -25,6 +25,12 @@ UPSTREAM_BRANCH="main"
 OWN_REPO="https://github.com/HatchetMan111/FreeLLM-API.git"
 OWN_BRANCH="main"
 INSTALL_DIR="/opt/freellmapi"
+# Erster Dashboard-Account (deklarativ, Upstream-Feature FREEAPI_CONFIG_JSON):
+# Wird vor dem ersten Start angelegt, dadurch entfällt der Remote-Setup-Code
+# ("First-run setup code") komplett – direkter Login mit diesen Daten.
+# Bei Re-Run bleibt das bestehende Passwort erhalten (idempotent).
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@freellmapi.local}"
+ADMIN_CONFIG="${INSTALL_DIR}/freellmapi.config.json"
 SRC_DIR="/tmp/freellmapi-install"
 LOG="/tmp/freellmapi-install.log"
 DEBUG=0
@@ -255,6 +261,21 @@ fi
 EOF
 }
 
+setup_admin() {
+  CT_EXEC <<EOF
+set -euo pipefail
+if [ ! -f ${ADMIN_CONFIG} ]; then
+  PASS="\$(openssl rand -hex 12)"
+  printf '{"admin":{"email":"${ADMIN_EMAIL}","password":"%s"}}' "\$PASS" > ${ADMIN_CONFIG}
+  chmod 600 ${ADMIN_CONFIG}
+  echo "Admin-Account ${ADMIN_EMAIL} deklarativ angelegt (Setup-Code entfällt)"
+else
+  echo "Admin-Config existiert – Passwort bleibt erhalten"
+fi
+grep -q '^FREEAPI_CONFIG_PATH=' ${INSTALL_DIR}/.env || echo 'FREEAPI_CONFIG_PATH=${ADMIN_CONFIG}' >> ${INSTALL_DIR}/.env
+EOF
+}
+
 setup_build() {
   CT_EXEC <<EOF
 set -euo pipefail
@@ -286,6 +307,7 @@ setup_container() {
   step "Node.js 22" setup_node
   step "Repo + Upstream-Clone" setup_repo
   step ".env (idempotent)" setup_env
+  step "Admin-Account (deklarativ)" setup_admin
   step "npm ci + build" setup_build
   step "systemd-Unit" setup_units
   step "Firewall" setup_firewall
@@ -293,6 +315,8 @@ setup_container() {
 
 update_container() {
   CTID="$1"
+  step ".env (idempotent)" setup_env
+  step "Admin-Account (deklarativ)" setup_admin
   CT_EXEC <<EOF
 set -euo pipefail
 git -C ${INSTALL_DIR} fetch origin ${UPSTREAM_BRANCH} --depth 1
@@ -323,7 +347,11 @@ verify() {
   ip="$(pct exec "$CTID" -- hostname -I | awk '{print $1}')"
   [ -n "${ip}" ] || fail "keine CT-IP ermittelbar"
   curl -fs "http://${ip}:${PORT}/" >/dev/null || fail "host-seitiger ${PORT}-Check auf ${ip} fail"
+  local admin_pass
+  admin_pass="$(pct exec "$CTID" -- bash -c 'python3 -c "import json;print(json.load(open('"'"'/opt/freellmapi/freellmapi.config.json'"'"'))[\"admin\"][\"password\"])"' 2>/dev/null || pct exec "$CTID" -- bash -c 'grep -o "\"password\":\"[^\"]*\"" /opt/freellmapi/freellmapi.config.json | cut -d\" -f4' 2>/dev/null || echo '?')"
   echo "FERTIG: http://${ip}:${PORT} (CT ${CTID}, Hostname ${HOSTNAME})"
+  echo "Login: ${ADMIN_EMAIL} / ${admin_pass}"
+  echo "Hinweis: Passwort im Dashboard unter Settings ändern. Vergessen? Auf dem Host: pct exec ${CTID} -- cat /opt/freellmapi/freellmapi.config.json"
 }
 
 main() {
