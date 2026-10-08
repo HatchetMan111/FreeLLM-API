@@ -18,6 +18,7 @@ mit `Restart=always`, Container mit `onboot: 1`.
 | Health | `http://<LXC-IP>:3001/api/ping` |
 | Standard-Ressourcen | 2 vCPU / 2048 MB RAM / 512 MB Swap / 8 GB Disk |
 | CT-ID | immer die **nächste freie ID** (`pvesh get /cluster/nextid`, 1 Retry bei Race) |
+| Storage | **auto-detect**: erster `rootdir`-Storage (`pvesm status --content rootdir`, bevorzugt `local-lvm`). Override: `STORAGE=local bash -c "$(...)"` |
 | Template | `debian-12-standard` (wird geladen falls fehlend) |
 
 ## 1. Installation (Einzeiler, auf dem Proxmox-Host als root)

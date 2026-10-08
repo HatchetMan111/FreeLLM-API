@@ -14,8 +14,10 @@ RAM=2048
 SWAP=512
 DISK=8
 TEMPLATE="debian-12-standard"
-STORAGE="local-lxc"
-TEMPLATE_STORE="local"
+# STORAGE="auto" erkennt den ersten rootdir-fähigen Storage (z.B. local-lvm/local).
+# Override z.B.: STORAGE=local-lvm bash -c "$(...)"  oder  STORAGE=pve-thin ...
+STORAGE="${STORAGE:-auto}"
+TEMPLATE_STORE="${TEMPLATE_STORE:-local}"
 BRIDGE="vmbr0"
 PORT=3001
 UPSTREAM_REPO="https://github.com/tashfeenahmed/freellmapi.git"
@@ -60,7 +62,10 @@ preflight() {
   command -v pct >/dev/null 2>&1 || fail "pct fehlt (nur auf PVE-Host als root ausführbar)"
   command -v pvesh >/dev/null 2>&1 || fail "pvesh fehlt"
   command -v pveam >/dev/null 2>&1 || fail "pveam fehlt"
+  command -v pvesm >/dev/null 2>&1 || fail "pvesm fehlt"
   [ "$(id -u)" = "0" ] || fail "bitte als root auf dem Proxmox-Host ausführen"
+  detect_storage
+  detect_template_store
   local tpl
   tpl="$(pveam list "${TEMPLATE_STORE}" 2>/dev/null | grep -o "${TEMPLATE}[^ ]*\\.tar\\.zst" | head -n 1 || true)"
   if [ -z "${tpl}" ]; then
@@ -71,6 +76,41 @@ preflight() {
     step "pveam download" pveam download "${TEMPLATE_STORE}" "${tpl}"
   fi
   echo "${TEMPLATE_STORE}:vztmpl/${tpl}" > /tmp/freellmapi.tpl
+}
+
+# Root cause Fix: 'local-lxc' existiert nicht auf Standard-PVE (dort local/local-lvm).
+# Daher Storage mit rootdir-Content automatisch erkennen statt hart zu kodieren.
+detect_storage() {
+  local avail
+  avail="$(pvesm status --content rootdir 2>/dev/null | awk 'NR>1 {print $1}' || true)"
+  [ -n "${avail}" ] || fail "kein Storage mit Content 'rootdir' gefunden (pvesm status --content rootdir leer). Verfügbare Storages: $(pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | tr '\n' ' ')"
+  if [ "${STORAGE}" != "auto" ]; then
+    if echo "${avail}" | grep -qx "${STORAGE}"; then
+      echo "Storage: ${STORAGE} (explizit gesetzt, rootdir-fähig)"
+      echo "${STORAGE}" > /tmp/freellmapi.storage
+      return 0
+    fi
+    echo "WARN: STORAGE='${STORAGE}' nicht rootdir-fähig oder unbekannt – auto-detect aktiv. Verfügbar: $(echo "${avail}" | tr '\n' ' ')" | tee -a "${LOG}"
+  fi
+  # Bevorzugt local-lvm (Thin-LVM), dann erster verfügbarer
+  if echo "${avail}" | grep -qx "local-lvm"; then
+    STORAGE="local-lvm"
+  else
+    STORAGE="$(echo "${avail}" | head -n 1)"
+  fi
+  echo "Storage: ${STORAGE} (auto-detect aus: $(echo "${avail}" | tr '\n' ' '))"
+  echo "${STORAGE}" > /tmp/freellmapi.storage
+}
+
+detect_template_store() {
+  local avail
+  avail="$(pvesm status --content vztmpl 2>/dev/null | awk 'NR>1 {print $1}' || true)"
+  [ -n "${avail}" ] || fail "kein Storage mit Content 'vztmpl' gefunden. Verfügbare Storages: $(pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | tr '\n' ' ')"
+  if echo "${avail}" | grep -qx "${TEMPLATE_STORE}"; then
+    return 0
+  fi
+  echo "WARN: TEMPLATE_STORE='${TEMPLATE_STORE}' kann keine Templates halten – nutze '$(echo "${avail}" | head -n 1)'." | tee -a "${LOG}"
+  TEMPLATE_STORE="$(echo "${avail}" | head -n 1)"
 }
 
 fetch_sources() {
@@ -110,33 +150,37 @@ next_id() {
 }
 
 create_container() {
-  local id tmpl
+  local id tmpl storage
   id="$(next_id)"
   tmpl="$(cat /tmp/freellmapi.tpl)"
-  # ID-Race: genau 1 RETRY mit frischer ID, dann Abbruch
+  storage="$(cat /tmp/freellmapi.storage 2>/dev/null || echo "${STORAGE}")"
+  echo "### pct create ${id} rootfs=${storage}:${DISK} tmpl=${tmpl} ###" >>"${LOG}" 2>&1
+  # ID-Race: genau 1 RETRY mit frischer ID, dann Abbruch (inkl. pct-Ausgabe im Log)
   if ! pct create "${id}" "${tmpl}" \
     --hostname "${HOSTNAME}" \
     --cores "${CPU}" \
     --memory "${RAM}" \
     --swap "${SWAP}" \
-    --rootfs "${STORAGE}:${DISK}" \
+    --rootfs "${storage}:${DISK}" \
     --net0 "name=eth0,bridge=${BRIDGE},ip=dhcp" \
     --ostype debian \
     --unprivileged 1 \
     --onboot 1 \
-    --start 0; then
+    --start 0 >>"${LOG}" 2>&1; then
+    echo "WARN: pct create ${id} fehlgeschlagen – Retry mit frischer ID (siehe Log)" | tee -a "${LOG}"
+    tail -n 20 "${LOG}" >&2 || true
     id="$(next_id)"
     pct create "${id}" "${tmpl}" \
       --hostname "${HOSTNAME}" \
       --cores "${CPU}" \
       --memory "${RAM}" \
       --swap "${SWAP}" \
-      --rootfs "${STORAGE}:${DISK}" \
+      --rootfs "${storage}:${DISK}" \
       --net0 "name=eth0,bridge=${BRIDGE},ip=dhcp" \
       --ostype debian \
       --unprivileged 1 \
       --onboot 1 \
-      --start 0 || fail "pct create failed (nach RETRY, Storage '${STORAGE}' prüfen)"
+      --start 0 >>"${LOG}" 2>&1 || fail "pct create failed (nach RETRY, Storage '${storage}' prüfen – 'pvesm status --content rootdir' zeigt gültige Werte)"
   fi
   echo "${id}" > /tmp/freellmapi.ctid
 }
