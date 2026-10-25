@@ -35,15 +35,55 @@ SRC_DIR="/tmp/freellmapi-install"
 LOG="/tmp/freellmapi-install.log"
 DEBUG=0
 CTID=""
+CT_IP=""
 
 if [ "${DEBUG}" = "1" ]; then
   set -x
 fi
 
+# Farben nur am TTY (Logs bleiben plain)
+if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+  C_GREEN="$(tput setaf 2)"; C_RED="$(tput setaf 1)"; C_YELLOW="$(tput setaf 3)"
+  C_CYAN="$(tput setaf 6)"; C_BOLD="$(tput bold)"; C_RESET="$(tput sgr0)"
+else
+  C_GREEN=""; C_RED=""; C_YELLOW=""; C_CYAN=""; C_BOLD=""; C_RESET=""
+fi
+
+banner() {
+  printf '\n%s==============================================================%s\n' "${C_CYAN}" "${C_RESET}"
+  printf '%s  FreeLLMAPI  ·  Proxmox-LXC-Installer%s\n' "${C_BOLD}${C_CYAN}" "${C_RESET}"
+  printf '%s  Nativ (Node %s), Port %s, ohne Docker%s\n' "${C_CYAN}" "22" "${PORT}" "${C_RESET}"
+  printf '%s==============================================================%s\n\n' "${C_CYAN}" "${C_RESET}"
+}
+
+section() {
+  printf '\n%s▸ %s%s\n' "${C_BOLD}${C_CYAN}" "$*" "${C_RESET}"
+}
+
+result_box() {
+  local ip="$1" mail="$2" pass="$3"
+  local line='=============================================================='
+  printf '\n%s%s%s\n' "${C_GREEN}" "${line}" "${C_RESET}"
+  printf '%s   ✔  FreeLLMAPI ist bereit%s\n' "${C_BOLD}${C_GREEN}" "${C_RESET}"
+  printf '%s%s%s\n' "${C_GREEN}" "${line}" "${C_RESET}"
+  printf '   %sÖffnen%s     %shttp://%s:%s%s\n' "${C_BOLD}" "${C_RESET}" "${C_BOLD}${C_CYAN}" "${ip}" "${PORT}" "${C_RESET}"
+  printf '   %sLogin%s      %s\n' "${C_BOLD}" "${C_RESET}" "${mail}"
+  printf '   %sPasswort%s   %s%s%s\n' "${C_BOLD}" "${C_RESET}" "${C_BOLD}${C_YELLOW}" "${pass}" "${C_RESET}"
+  printf '   %sContainer%s  CT %s  (%s)\n' "${C_BOLD}" "${C_RESET}" "${CTID}" "${HOSTNAME}"
+  printf '%s%s%s\n' "${C_GREEN}" "${line}" "${C_RESET}"
+  printf '   %sNächste Schritte%s\n' "${C_BOLD}" "${C_RESET}"
+  printf '   1. URL im Browser öffnen und mit den Daten oben einloggen\n'
+  printf '   2. Unter %sKeys%s die Provider-API-Keys eintragen\n' "${C_BOLD}" "${C_RESET}"
+  printf '   3. %sFallback Chain%s sortieren, Unified-Key kopieren\n' "${C_BOLD}" "${C_RESET}"
+  printf '   4. Clients auf %shttp://%s:%s/v1%s zeigen lassen\n' "${C_CYAN}" "${ip}" "${PORT}" "${C_RESET}"
+  printf '   %sPasswort ändern:%s Dashboard → Settings   %s|%s   %sReset:%s pct exec %s -- cat /opt/freellmapi/freellmapi.config.json\n\n' \
+    "${C_BOLD}" "${C_RESET}" "${C_CYAN}" "${C_RESET}" "${C_BOLD}" "${C_RESET}" "${CTID}"
+}
+
 # Vollständige Fehlerkette: Stufe, Befehl, Exit-Code, Log-Auszug
 fail() {
   local rc=$?
-  echo "FAIL: $* (exit=${rc})" >&2
+  printf '%sFAIL: %s (exit=%s)%s\n' "${C_RED}${C_BOLD}" "$*" "${rc}" "${C_RESET}" >&2
   echo "--- letzte 50 Log-Zeilen (${LOG}) ---" >&2
   tail -n 50 "${LOG}" 2>/dev/null >&2 || true
   echo "Re-Run mit Trace: <Einzeiler> --debug  (entspricht bash -x)" >&2
@@ -55,11 +95,11 @@ step() {
   shift
   echo "### ${name} :: $*" >>"${LOG}" 2>&1
   if "$@" >>"${LOG}" 2>&1; then
-    echo "OK: ${name}"
+    printf '%s  [OK]%s %s\n' "${C_GREEN}" "${C_RESET}" "${name}"
     return 0
   fi
   local rc=$?
-  echo "FAIL: Stufe '${name}', Befehl '$*', Exit-Code ${rc}" >&2
+  printf '%sFAIL: Stufe %s%s%s, Befehl %s%s%s, Exit-Code %s\n' "${C_RED}${C_BOLD}" "${C_RESET}${C_BOLD}" "${name}" "${C_RESET}" "${C_BOLD}" "$*" "${C_RESET}" "${rc}" >&2
   tail -n 50 "${LOG}" >&2 || true
   return "${rc}"
 }
@@ -92,7 +132,7 @@ detect_storage() {
   [ -n "${avail}" ] || fail "kein Storage mit Content 'rootdir' gefunden (pvesm status --content rootdir leer). Verfügbare Storages: $(pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | tr '\n' ' ')"
   if [ "${STORAGE}" != "auto" ]; then
     if echo "${avail}" | grep -qx "${STORAGE}"; then
-      echo "Storage: ${STORAGE} (explizit gesetzt, rootdir-fähig)"
+      printf '%s  [OK]%s Storage %s (explizit, rootdir-fähig)\n' "${C_GREEN}" "${C_RESET}" "${STORAGE}"
       echo "${STORAGE}" > /tmp/freellmapi.storage
       return 0
     fi
@@ -104,7 +144,7 @@ detect_storage() {
   else
     STORAGE="$(echo "${avail}" | head -n 1)"
   fi
-  echo "Storage: ${STORAGE} (auto-detect aus: $(echo "${avail}" | tr '\n' ' '))"
+  printf '%s  [OK]%s Storage %s (auto-erkannt)\n' "${C_GREEN}" "${C_RESET}" "${STORAGE}"
   echo "${STORAGE}" > /tmp/freellmapi.storage
 }
 
@@ -148,7 +188,8 @@ EOF
 }
 
 existing_ct() {
-  pct list | awk 'NR>1 && $4 == "'"${HOSTNAME}"'" {print $1}'
+  # 'pct list' hat eine leere Lock-Spalte; Name ist das letzte Feld (nicht $4)
+  pct list | awk -v h="${HOSTNAME}" 'NR>1 && $NF == h {print $1; exit}'
 }
 
 next_id() {
@@ -160,6 +201,8 @@ create_container() {
   id="$(next_id)"
   tmpl="$(cat /tmp/freellmapi.tpl)"
   storage="$(cat /tmp/freellmapi.storage 2>/dev/null || echo "${STORAGE}")"
+  printf '  %s·%s Erstelle Container %s (%s vCPU, %s MB RAM, %s GB Disk auf %s)\n' \
+    "${C_CYAN}" "${C_RESET}" "${id}" "${CPU}" "${RAM}" "${DISK}" "${storage}"
   echo "### pct create ${id} rootfs=${storage}:${DISK} tmpl=${tmpl} ###" >>"${LOG}" 2>&1
   # ID-Race: genau 1 RETRY mit frischer ID, dann Abbruch (inkl. pct-Ausgabe im Log)
   if ! pct create "${id}" "${tmpl}" \
@@ -198,7 +241,8 @@ wait_for_ip() {
   while [ "${i}" -lt 24 ]; do
     ip="$(pct exec "${id}" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
     if [ -n "${ip}" ]; then
-      echo "${ip}"
+      CT_IP="${ip}"
+      printf '%s  [OK]%s Container läuft (CT %s, IP %s)\n' "${C_GREEN}" "${C_RESET}" "${id}" "${ip}"
       return 0
     fi
     sleep 5
@@ -313,10 +357,7 @@ setup_container() {
   step "Firewall" setup_firewall
 }
 
-update_container() {
-  CTID="$1"
-  step ".env (idempotent)" setup_env
-  step "Admin-Account (deklarativ)" setup_admin
+update_pull_build() {
   CT_EXEC <<EOF
 set -euo pipefail
 git -C ${INSTALL_DIR} fetch origin ${UPSTREAM_BRANCH} --depth 1
@@ -326,6 +367,9 @@ cd ${INSTALL_DIR}
 npm ci
 npm run build
 EOF
+}
+
+update_restart() {
   pct push "$CTID" "$SRC_DIR/install/systemd/freellmapi.service" "/etc/systemd/system/freellmapi.service"
   CT_EXEC <<'EOF'
 set -euo pipefail
@@ -333,25 +377,45 @@ systemctl daemon-reload
 systemctl enable --now freellmapi
 systemctl restart freellmapi
 EOF
+}
+
+update_container() {
+  CTID="$1"
+  step ".env (idempotent)" setup_env
+  step "Admin-Account (deklarativ)" setup_admin
+  step "Upstream aktualisieren + neu bauen" update_pull_build
+  step "Service neu starten" update_restart
   verify
 }
 
+check_service() {
+  pct exec "$CTID" -- systemctl is-active freellmapi | grep -qx active
+}
+
+check_http_local() {
+  pct exec "$CTID" -- bash -c 'curl -fsS http://127.0.0.1:3001/api/ping >/dev/null 2>&1 || curl -fsS http://127.0.0.1:3001/ >/dev/null 2>&1'
+}
+
+check_onboot() {
+  pct config "$CTID" | grep -qi '^onboot: 1'
+}
+
+check_http_host() {
+  curl -fs "http://${CT_IP}:${PORT}/" >/dev/null
+}
+
 verify() {
-  pct exec "$CTID" -- systemctl is-active freellmapi || fail "service freellmapi inaktiv (journalctl: pct exec $CTID -- journalctl -u freellmapi -n 100)"
-  # /api/ping ist Upstream-Healthcheck (docker-compose.yml); Fallbacks für künftige Versionen
-  if ! pct exec "$CTID" -- bash -c 'curl -fsS http://127.0.0.1:3001/api/ping'; then
-    pct exec "$CTID" -- bash -c 'curl -fsS http://127.0.0.1:3001/ >/dev/null' || fail "verify localhost:3001 fail (weder /api/ping noch / erreichbar)"
-  fi
-  pct config "$CTID" | grep -qi onboot || fail "onboot nicht gesetzt"
-  local ip
-  ip="$(pct exec "$CTID" -- hostname -I | awk '{print $1}')"
+  step "Dienst freellmapi aktiv" check_service || fail "service freellmapi inaktiv – Diagnose: pct exec ${CTID} -- journalctl -u freellmapi -n 100"
+  step "Web-UI antwortet (localhost:${PORT})" check_http_local || fail "Web-UI antwortet nicht auf localhost:${PORT} – Diagnose: pct exec ${CTID} -- journalctl -u freellmapi -n 100"
+  step "Autostart (onboot) gesetzt" check_onboot || fail "onboot nicht gesetzt – pct set ${CTID} --onboot 1"
+  local ip="${CT_IP:-$(pct exec "$CTID" -- hostname -I | awk '{print $1}')}"
   [ -n "${ip}" ] || fail "keine CT-IP ermittelbar"
-  curl -fs "http://${ip}:${PORT}/" >/dev/null || fail "host-seitiger ${PORT}-Check auf ${ip} fail"
+  CT_IP="${ip}"
+  step "Web-UI aus Host-Sicht erreichbar" check_http_host || fail "${PORT}-Check auf ${ip} fehlgeschlagen (PVE-Firewall prüfen)"
   local admin_pass
   admin_pass="$(pct exec "$CTID" -- bash -c 'python3 -c "import json;print(json.load(open('"'"'/opt/freellmapi/freellmapi.config.json'"'"'))[\"admin\"][\"password\"])"' 2>/dev/null || pct exec "$CTID" -- bash -c 'grep -o "\"password\":\"[^\"]*\"" /opt/freellmapi/freellmapi.config.json | cut -d\" -f4' 2>/dev/null || echo '?')"
-  echo "FERTIG: http://${ip}:${PORT} (CT ${CTID}, Hostname ${HOSTNAME})"
-  echo "Login: ${ADMIN_EMAIL} / ${admin_pass}"
-  echo "Hinweis: Passwort im Dashboard unter Settings ändern. Vergessen? Auf dem Host: pct exec ${CTID} -- cat /opt/freellmapi/freellmapi.config.json"
+  echo "FERTIG: http://${ip}:${PORT} (CT ${CTID}, Hostname ${HOSTNAME})" >>"${LOG}" 2>&1 || true
+  result_box "${ip}" "${ADMIN_EMAIL}" "${admin_pass}"
 }
 
 main() {
@@ -360,20 +424,31 @@ main() {
     set -x
   fi
   : > "${LOG}" || true
-  local existing
+  banner
+
+  section "1/4  Host prüfen"
   preflight
   fetch_sources
+
+  local existing
   existing="$(existing_ct || true)"
   if [ -n "${existing}" ]; then
-    echo "CT '${HOSTNAME}' existiert (ID ${existing}) – Update-Pfad, kein neuer Container."
+    section "2/4  Bestehenden Container aktualisieren"
+    printf '  %s·%s CT %s (%s) gefunden – Update statt Neuinstallation\n' "${C_CYAN}" "${C_RESET}" "${existing}" "${HOSTNAME}"
     update_container "${existing}"
     return 0
   fi
+
+  section "2/4  Container bereitstellen"
   create_container
   CTID="$(cat /tmp/freellmapi.ctid)"
-  pct start "$CTID"
+  pct start "$CTID" >>"${LOG}" 2>&1
   wait_for_ip
+
+  section "3/4  Anwendung installieren"
   setup_container
+
+  section "4/4  Prüfen und übergeben"
   verify
   # Deinstall: pct stop <ctid> && pct destroy <ctid> (CT bleibt bei FAIL zur Diagnose stehen)
 }

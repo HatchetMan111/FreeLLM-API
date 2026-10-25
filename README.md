@@ -48,21 +48,58 @@ Das Skript (`set -euo pipefail`, idempotent):
 4. verifiziert `systemctl is-active` + HTTP-Checks auf `localhost:3001`
    (`/api/ping`, Fallback `/`) + Host-Check auf die CT-IP und gibt die finale URL aus.
 
-Erwartete Schlussausgabe (Beispiel):
+Erwartete Ausgabe (Beispiel, Farben nur am Terminal):
 
 ```text
-OK: Basis-Pakete
-OK: Node.js 22
-OK: Repo + Upstream-Clone
-OK: .env (idempotent)
-OK: Admin-Account (deklarativ)
-OK: npm ci + build
-OK: systemd-Unit
-OK: Firewall
-FERTIG: http://192.168.1.100:3001 (CT 100, Hostname freellmapi)
-Login: admin@freellmapi.local / <generiertes-passwort>
-Hinweis: Passwort im Dashboard unter Settings ändern. Vergessen? Auf dem Host: pct exec 100 -- cat /opt/freellmapi/freellmapi.config.json
+==============================================================
+  FreeLLMAPI  ·  Proxmox-LXC-Installer
+  Nativ (Node 22), Port 3001, ohne Docker
+==============================================================
+
+▸ 1/4  Host prüfen
+  [OK] Storage local-lvm (auto-erkannt)
+  [OK] Checkout vorbereiten
+  [OK] Quellen klonen (eigener Installer)
+
+▸ 2/4  Container bereitstellen
+  · Erstelle Container 100 (2 vCPU, 2048 MB RAM, 8 GB Disk auf local-lvm)
+  [OK] Container läuft (CT 100, IP 192.168.1.100)
+
+▸ 3/4  Anwendung installieren
+  [OK] Basis-Pakete
+  [OK] Node.js 22
+  [OK] Repo + Upstream-Clone
+  [OK] .env (idempotent)
+  [OK] Admin-Account (deklarativ)
+  [OK] npm ci + build
+  [OK] systemd-Unit
+  [OK] Firewall
+
+▸ 4/4  Prüfen und übergeben
+  [OK] Dienst freellmapi aktiv
+  [OK] Web-UI antwortet (localhost:3001)
+  [OK] Autostart (onboot) gesetzt
+  [OK] Web-UI aus Host-Sicht erreichbar
+
+==============================================================
+   ✔  FreeLLMAPI ist bereit
+==============================================================
+   Öffnen     http://192.168.1.100:3001
+   Login      admin@freellmapi.local
+   Passwort   <generiertes-passwort>
+   Container  CT 100  (freellmapi)
+==============================================================
+   Nächste Schritte
+   1. URL im Browser öffnen und mit den Daten oben einloggen
+   2. Unter Keys die Provider-API-Keys eintragen
+   3. Fallback Chain sortieren, Unified-Key kopieren
+   4. Clients auf http://192.168.1.100:3001/v1 zeigen lassen
+   Passwort ändern: Dashboard → Settings   |   Reset: pct exec 100 -- cat /opt/freellmapi/freellmapi.config.json
 ```
+
+Beim erneuten Lauf erkennt der Installer den CT am Hostnamen und zeigt statt
+Phase 2 `▸ 2/4  Bestehenden Container aktualisieren` (git pull, rebuild,
+restart) – es entsteht **kein** zweiter Container.
 
 Danach: `http://<LXC-IP>:3001` öffnen und direkt mit obigen Daten einloggen –
 **kein Setup-Code nötig**: Der Installer legt den ersten Account deklarativ
